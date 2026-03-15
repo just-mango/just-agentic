@@ -1,0 +1,23 @@
+langgraph>=1.0.0
+langchain-openai>=0.3.0
+langchain-core>=1.0.0
+duckduckgo-search>=6.0
+pydantic>=2.0
+python-dotenv>=1.0
+PyJWT>=2.0
+
+# Anthropic
+# langchain-anthropic>=0.3.0
+
+# Ollama
+# langchain-community>=0.2
+
+# Checkpoint
+langgraph-checkpoint-sqlite>=2.0
+
+# PostgreSQL checkpoint (prod)
+# langgraph-checkpoint-postgres>=2.0
+# psycopg2-binary>=2.9
+
+# Audit DB
+# psycopg2-binary>=2.9
