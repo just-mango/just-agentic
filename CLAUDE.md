@@ -1,6 +1,6 @@
 # just-agentic
 
-Secure multi-agent CLI using LangGraph + OpenAI. Supervisor routes tasks to Backend / DevOps / QA agents with RBAC, data classification, and human approval for dangerous actions.
+Secure multi-agent CLI using LangGraph + OpenAI. Supervisor routes tasks to Backend / DevOps / QA agents with RBAC, department-based access control, data classification, prompt injection detection, and human approval for dangerous actions.
 
 ## Quick Start
 
@@ -14,39 +14,69 @@ python main.py
 ## Graph Flow
 
 ```
-rbac_guard → data_classifier → intent_guard → supervisor
-  → human_approval → [backend | devops | qa] → supervisor → audit_log
+rbac_guard → department_guard → data_classifier → intent_guard → prompt_injection_guard
+  → supervisor → human_approval → [backend | devops | qa] → supervisor → audit_log
 ```
 
 - **Agents**: `backend` (code), `devops` (Docker/env/CI), `qa` (tests/logs)
 - **Supervisor**: routes by intent, confidence score, fallback, retry, loop detection
 - **Human approval**: interrupts before `code_write` / `infrastructure_write` actions
 
+## Auth Modes
+
+```
+[1] JWT token  — paste Bearer token; role/dept/clearance decoded from token
+[2] Dev mode   — enter user_id / role / department manually
+```
+
+Set `JWT_SECRET` in `.env` to enable JWT mode. Generate a dev token:
+
+```python
+from security.jwt_auth import make_dev_token
+print(make_dev_token("alice", "analyst", "engineering"))
+```
+
 ## Key Files
 
 | File | Purpose |
 |---|---|
 | `main.py` | CLI entry, interrupt handling, resume loop |
-| `graph/secure_graph.py` | graph definition |
+| `graph/secure_graph.py` | graph definition + SqliteSaver checkpoint |
 | `graph/supervisor.py` | routing + intent/confidence logic |
 | `graph/state.py` | `AgentState` — single unified state |
-| `security/rbac.py` | roles, tools, clearance levels |
+| `security/rbac.py` | roles, departments, effective tools + clearance |
+| `security/jwt_auth.py` | JWT decode/encode (PyJWT, HS256) |
+| `security/output_classifier.py` | classifies tool output by path + content |
 | `config/prompts.py` | system prompts for all agents |
 | `llm/adapter.py` | LLM provider switch |
 
-## Roles
+## Roles & Departments
 
-`viewer` → `analyst` → `manager` → `admin` (increasing tool access + clearance)
+| Role | Clearance | Tools |
+|---|---|---|
+| viewer | PUBLIC (1) | read_file, list_files, web_search |
+| analyst | INTERNAL (2) | + search_code, git_status, read_log |
+| manager | CONFIDENTIAL (3) | + run_shell, run_tests, get_env |
+| admin | SECRET (4) | all tools |
+
+Effective access = `role.allowed_tools ∩ dept.permitted_tools`, clearance = `min(role, dept)`.
 
 ## Environment
 
 ```bash
 LLM_PROVIDER=openai          # openai | openrouter | anthropic | ollama | vllm
 OPENAI_API_KEY=sk-...
+JWT_SECRET=your-secret-here
 MAX_ITERATIONS=8
 CONFIDENCE_THRESHOLD=0.55
 WORKSPACE_ROOT=/path/to/project
 CHECKPOINT_BACKEND=sqlite    # sqlite | memory
+```
+
+## Tests
+
+```bash
+python -m pytest tests/ -v   # 157 tests
 ```
 
 ## Docs
