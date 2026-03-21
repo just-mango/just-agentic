@@ -7,6 +7,7 @@ Failures are silently swallowed so they never block a response.
 """
 
 import hashlib
+import sys
 import time
 from dataclasses import dataclass
 
@@ -19,6 +20,7 @@ class AuditRecord:
     timestamp: str
     user_id: str
     role: str
+    department: str
     clearance_level: int
     query: str
     response_hash: str
@@ -40,6 +42,7 @@ class AuditLogger:
         *,
         user_id: str,
         role: str,
+        department: str,
         clearance_level: int,
         query: str,
         response: str,
@@ -57,6 +60,7 @@ class AuditLogger:
             timestamp=ts,
             user_id=user_id,
             role=role,
+            department=department,
             clearance_level=clearance_level,
             query=query,
             response_hash=response_hash,
@@ -73,6 +77,7 @@ class AuditLogger:
                 db.add(m.AuditRecord(
                     user_id=user_id,
                     role=role,
+                    department=department,
                     clearance_level=clearance_level,
                     query=query,
                     response_hash=response_hash,
@@ -83,8 +88,9 @@ class AuditLogger:
                     status=status,
                     error=error,
                 ))
-        except Exception:
-            pass  # audit failure must never block the response
+        except Exception as exc:
+            # Never block the response, but make the failure visible
+            print(f"[AUDIT ERROR] Failed to write audit record: {exc}", file=sys.stderr)
 
         return record
 

@@ -90,9 +90,13 @@ def effective_clearance(role: str, department: str) -> int:
     )
 
 
-def is_tool_allowed(role: str, tool_name: str) -> bool:
-    """Check role-level tool permission (without dept context)."""
+def is_tool_allowed(role: str, tool_name: str, department: str = "all") -> bool:
+    """Check tool permission against role ∩ department intersection.
+
+    Always pass ``department`` — the default ``"all"`` is intentionally broad
+    and exists only to preserve call-site compatibility during migration.
+    """
     try:
-        return tool_name in get_policy(role).allowed_tools
+        return tool_name in effective_tools(role, department)
     except PermissionError:
         return False

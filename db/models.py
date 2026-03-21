@@ -83,6 +83,7 @@ class AuditRecord(Base):
     )
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[str] = mapped_column(String(64), nullable=False)
+    department: Mapped[str] = mapped_column(String(64), nullable=False, default="unknown")
     clearance_level: Mapped[int] = mapped_column(Integer, nullable=False)
     query: Mapped[str] = mapped_column(Text, nullable=False)
     response_hash: Mapped[str] = mapped_column(String(80), nullable=False)

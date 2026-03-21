@@ -33,6 +33,7 @@ def audit_log_node(state: AgentState) -> AgentState:
         record = audit_logger.log(
             user_id=state.get("user_id", "unknown"),
             role=state.get("user_role", "unknown"),
+            department=state.get("user_department", "unknown"),
             clearance_level=state.get("clearance_level", 0),
             query=state.get("messages", [{}])[0].content if state.get("messages") else "",
             response=final_response,
