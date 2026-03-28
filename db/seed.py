@@ -11,7 +11,7 @@ _READ_TOOLS: list[str] = [
 ]
 
 # analyst adds reconnaissance + reporting tools
-_ANALYST_TOOLS: list[str] = _READ_TOOLS + ["scan_secrets", "scrape_page"]
+_ANALYST_TOOLS: list[str] = _READ_TOOLS + ["scan_secrets", "scrape_page", "search_knowledge"]
 
 # manager adds execution + DB inspection
 _ANALYZE_TOOLS: list[str] = _ANALYST_TOOLS + [
@@ -44,6 +44,7 @@ _DEFAULT_DEPARTMENTS = [
             "read_file", "write_file", "list_files", "search_code",
             "run_shell", "git_status", "execute_python", "run_tests",
             "web_search", "scrape_page", "scan_secrets", "query_db",
+            "search_knowledge",
         ],
     },
     {
@@ -51,7 +52,7 @@ _DEFAULT_DEPARTMENTS = [
         "permitted_tools": [
             "read_file", "write_file", "list_files", "read_log",
             "run_shell", "git_status", "get_env", "web_search",
-            "scrape_page", "query_db",
+            "scrape_page", "query_db", "search_knowledge",
         ],
     },
     {
@@ -59,7 +60,7 @@ _DEFAULT_DEPARTMENTS = [
         "permitted_tools": [
             "read_file", "list_files", "search_code", "read_log",
             "run_shell", "run_tests", "execute_python", "web_search",
-            "scrape_page", "scan_secrets",
+            "scrape_page", "scan_secrets", "search_knowledge",
         ],
     },
     {
@@ -67,15 +68,16 @@ _DEFAULT_DEPARTMENTS = [
         "permitted_tools": [
             "read_file", "list_files", "search_code", "read_log",
             "execute_python", "web_search", "scrape_page", "query_db",
+            "search_knowledge",
         ],
     },
     {
         "name": "security", "max_clearance": "SECRET",
-        "permitted_tools": _WRITE_TOOLS,
+        "permitted_tools": _WRITE_TOOLS + ["search_knowledge"],
     },
     {
         "name": "all", "max_clearance": "SECRET",
-        "permitted_tools": _WRITE_TOOLS,
+        "permitted_tools": _WRITE_TOOLS + ["search_knowledge"],
     },
 ]
 
