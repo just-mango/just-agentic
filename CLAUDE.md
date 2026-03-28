@@ -21,7 +21,7 @@ rbac_guard → department_guard → agent_resolver → data_classifier → inten
   → supervisor → human_approval → [backend | devops | qa | <custom>] → supervisor → audit_log
 ```
 
-- **Agents**: hardcoded defaults (`backend`, `devops`, `qa`) + custom agents created by super-admin
+- **Agents**: seeded defaults (`backend`, `devops`, `qa`, `developer`) + custom agents created by super-admin
 - **Supervisor**: routes by intent + confidence score, with fallback, retry, loop detection; single-agent bypass when user has only one agent
 - **Human approval**: `interrupt()` before `code_write` / `infrastructure_write` actions
 - **Checkpoint**: PostgresSaver (PostgreSQL) or MemorySaver (fallback/testing)
@@ -90,6 +90,8 @@ print(make_dev_token("alice", "analyst", "engineering"))
 
 Effective access = `role.allowed_tools ∩ dept.permitted_tools`, clearance = `min(role, dept)`.
 
+Default departments: `engineering`, `devops`, `qa`, `data`, `security`, `developer`, `all`
+
 ## ABAC — Dynamic Agent Management
 
 Super-admins (admin role) can create custom agent definitions and bind them to users:
@@ -103,7 +105,7 @@ DELETE /api/admin/bindings/{id}           — revoke binding
 ```
 
 - RBAC is the hard floor: agent tools = `agent.allowed_tools ∩ user.effective_rbac_tools`
-- Users with no bindings fall back to default agents (backend/devops/qa)
+- Users with no bindings fall back to default agents (backend/devops/qa/developer)
 - Users with exactly 1 agent skip supervisor LLM routing entirely
 
 ## RAG Knowledge Base
@@ -134,6 +136,7 @@ db/
                      KnowledgeChunk, AuditRecord, ToolCallLog
   session.py    Engine factory — PostgreSQL (prod) / SQLite (test)
   seed.py       Idempotent default data seeding
+                Includes: developer department + developer agent definition
 ```
 
 Migrations via Alembic:
