@@ -7,11 +7,33 @@ Runs as a **CLI** or **FastAPI + SSE API** (with Next.js frontend).
 ## Quick Start
 
 ```bash
+# Local dev
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # add OPENAI_API_KEY, DATABASE_URL
 python main.py          # CLI mode
-uvicorn api.main:app    # API mode
+uvicorn api.main:app    # API mode (requires Redis + Postgres)
+
+# Docker (recommended)
+docker compose up --build
+```
+
+## Architecture
+
+```
+Client (browser / CLI thin client)
+  │  SSE
+  ▼
+FastAPI (stateless — api/)          ← scale horizontally
+  │  enqueue job
+  ▼
+Redis Queue (ARQ)
+  │  consume
+  ▼
+Worker (worker.py — runs LangGraph)
+  │  HTTP  (dangerous tools only)
+  ▼
+Tool Service (tool_service/ — isolated container, no internet)
 ```
 
 ## Graph Flow
@@ -58,17 +80,25 @@ print(make_dev_token("alice", "analyst", "engineering"))
 | File | Purpose |
 |---|---|
 | `main.py` | CLI entry — init_db, login, stream, interrupt handling |
-| `api/main.py` | FastAPI app — startup, CORS, routers |
-| `api/routers/agent.py` | POST /api/agent/chat + /resume — SSE streaming |
+| `main_client.py` | Thin CLI client — SSE relay only, no LangGraph (Docker image) |
+| `ja` | Shell wrapper — `docker run` thin client pointing at JA_SERVER |
+| `worker.py` | ARQ worker — run_graph_job, resume_graph_job → publishes to Redis Stream |
+| `api/main.py` | FastAPI app — startup (init_db + init_redis), CORS, routers |
+| `api/routers/agent.py` | POST /api/agent/chat + /resume — enqueue job + relay Redis Stream |
 | `api/routers/auth.py` | POST /api/auth/login — JWT + dev modes |
-| `api/routers/admin.py` | CRUD agent definitions + user–agent bindings |
+| `api/routers/admin.py` | CRUD agent definitions + user–agent bindings + MCP servers |
 | `api/routers/knowledge.py` | Upload/list/delete knowledge documents (RAG) |
+| `api/redis_client.py` | ARQ pool + relay connection pool — init/close on startup/shutdown |
 | `graph/secure_graph.py` | Graph definition — loads agents from DB at startup |
 | `graph/supervisor.py` | Routing + intent/confidence + single-agent bypass |
+| `graph/state_builder.py` | Shared AgentState factory used by API + worker |
 | `graph/nodes/agent_resolver.py` | Loads user's allowed agents from DB, enforces RBAC floor |
 | `graph/agents/dynamic.py` | Runtime agent factory from DB definition |
 | `graph/state.py` | `AgentState` TypedDict — single unified state |
-| `db/models.py` | SQLAlchemy ORM — all models including AgentDefinition, KnowledgeChunk |
+| `tool_service/main.py` | Tool Execution Service — POST /execute (bearer auth) |
+| `tool_service/executor.py` | subprocess runner with RLIMIT_* resource limits |
+| `tools/_tool_client.py` | Routes run_shell/execute_python/run_tests to tool service or local |
+| `db/models.py` | SQLAlchemy ORM — all models including AgentDefinition, KnowledgeChunk, MCPServer |
 | `db/seed.py` | Default RBAC + agent definitions seeding |
 | `security/rbac.py` | DB-backed roles, departments, effective tools + clearance |
 | `security/jwt_auth.py` | JWT decode/encode (PyJWT, HS256) |
@@ -86,7 +116,7 @@ print(make_dev_token("alice", "analyst", "engineering"))
 | viewer | PUBLIC (1) | read_file, list_files, web_search |
 | analyst | INTERNAL (2) | + search_code, git_status, read_log, query_db, scrape_page, scan_secrets, search_knowledge |
 | manager | CONFIDENTIAL (3) | + run_shell, run_tests, get_env, execute_python |
-| admin | SECRET (4) | all tools including write_file |
+| admin | SECRET (4) | all tools including write_file, edit_file |
 
 Effective access = `role.allowed_tools ∩ dept.permitted_tools`, clearance = `min(role, dept)`.
 
@@ -125,6 +155,23 @@ Agents use `search_knowledge(query)` tool:
 
 **Production:** requires `pip install pgvector` and PostgreSQL with `vector` extension.
 
+## Tool Execution Security (Phase 2)
+
+Dangerous tools (`run_shell`, `execute_python`, `run_tests`) route through an isolated container:
+
+```
+Worker ──HTTP──▶ tool-service:8001
+                  Authorization: Bearer $TOOL_SERVICE_SECRET
+                  network: tool-net (internal only — no internet)
+                  /app: read-only
+                  /tmp: tmpfs 128MB
+                  CPU: 2 cores max, RAM: 512MB max
+                  RLIMIT_CPU / RLIMIT_AS / RLIMIT_FSIZE / RLIMIT_NPROC inside subprocess
+```
+
+- Set `TOOL_SERVICE_URL=http://tool-service:8001` to enable (auto-set in docker-compose)
+- When not set (local dev / tests): tools run locally with resource limits only (Option A)
+
 ## Database
 
 `init_db()` runs at startup — creates tables and seeds default RBAC + agent data.
@@ -133,10 +180,9 @@ Agents use `search_knowledge(query)` tool:
 db/
   models.py     ORM: ClearanceLevel, Role, Department, User,
                      AgentDefinition, UserAgentBinding,
-                     KnowledgeChunk, AuditRecord, ToolCallLog
+                     KnowledgeChunk, AuditRecord, ToolCallLog, MCPServer
   session.py    Engine factory — PostgreSQL (prod) / SQLite (test)
   seed.py       Idempotent default data seeding
-                Includes: developer department + developer agent definition
 ```
 
 Migrations via Alembic:
@@ -152,10 +198,15 @@ LLM_PROVIDER=openai          # openai | openrouter | anthropic | ollama | vllm
 OPENAI_API_KEY=sk-...
 JWT_SECRET=your-secret-here
 DATABASE_URL=postgresql://user:pass@localhost:5432/just_agentic
+REDIS_URL=redis://localhost:6379
 MAX_ITERATIONS=8
 CONFIDENCE_THRESHOLD=0.55
 WORKSPACE_ROOT=/path/to/project
 CHECKPOINT_BACKEND=postgres  # postgres | memory
+
+# Phase 2 — Tool Service
+TOOL_SERVICE_URL=http://tool-service:8001   # set in Docker, unset for local dev
+TOOL_SERVICE_SECRET=change-me-in-production
 ```
 
 ## API Endpoints
@@ -163,19 +214,21 @@ CHECKPOINT_BACKEND=postgres  # postgres | memory
 | Method | Path | Description |
 |---|---|---|
 | POST | `/api/auth/login` | JWT or dev login → returns access token |
-| POST | `/api/agent/chat` | Start task — streams SSE events |
+| POST | `/api/agent/chat` | Start task — enqueue job + stream SSE |
 | POST | `/api/agent/resume/{thread_id}` | Resume after human approval interrupt |
 | POST | `/api/admin/agents` | Create agent definition (admin) |
 | POST | `/api/admin/agents/{name}/bindings` | Bind user to agent (admin) |
 | POST | `/api/admin/knowledge` | Upload knowledge document (admin) |
+| POST | `/api/admin/mcp` | Register MCP server (admin) |
 | GET | `/healthz` | Health check |
+| GET | `tool-service:8001/healthz` | Tool service health check |
 
-SSE event types: `thread_id`, `agent_switch`, `message`, `approval_required`, `permission_denied`, `done`, `error`
+SSE event types: `thread_id`, `agent_switch`, `tool_call`, `message`, `approval_required`, `permission_denied`, `done`, `error`
 
 ## Tests
 
 ```bash
-python -m pytest tests/ -v   # 191 tests
+python -m pytest tests/ -v   # 244 tests
 ```
 
 ## Docs
@@ -193,5 +246,7 @@ python -m pytest tests/ -v   # 191 tests
 - Tools are filtered by `state.allowed_tools` before binding to any agent
 - RBAC is always the floor — no layer can grant tools beyond `role ∩ dept`
 - Every action is logged to `audit_records` table (append-only, never deleted)
+- Tool calls logged to `tool_call_logs` table per execution
 - `init_db()` is idempotent — safe to call on every startup
 - Graph is rebuilt from DB when agent definitions change (`invalidate_graph_cache()`)
+- Worker and API are separate processes — share state only via PostgreSQL + Redis

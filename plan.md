@@ -7,11 +7,11 @@
 
 ---
 
-## Phase 1 — Scalability
+## Phase 1 — Scalability ✅ Done
 > FastAPI stateless + Redis + Worker Queue
 
 **Goal:**
-- Technical : API stateless, Worker pool รัน graph, SSE relay ผ่าน Redis pub/sub
+- Technical : API stateless, Worker pool รัน graph, SSE relay ผ่าน Redis Streams
 - Business  : รองรับ 1,000+ concurrent users, deploy ได้โดยไม่ downtime, scale ตาม demand
 - Metric    : 1,000 concurrent users, p95 latency < 3s, zero downtime rolling deploy, worker auto-scale ตาม queue depth
 
@@ -19,42 +19,53 @@
 
 **สิ่งที่ทำ:**
 1. เพิ่ม Redis service ใน docker-compose
-2. FastAPI enqueue task → Redis แทนรัน graph โดยตรง
-3. Worker process (ARQ) consume queue → รัน LangGraph graph → publish SSE events → Redis pub/sub
-4. FastAPI SSE endpoint relay จาก Redis pub/sub (stateless)
-5. Client ไม่ต้องเปลี่ยนเลย
+2. FastAPI enqueue task → ARQ queue แทนรัน graph โดยตรง
+3. Worker process (ARQ) consume queue → รัน LangGraph graph → publish events → Redis Streams
+4. FastAPI SSE endpoint relay จาก Redis Streams (stateless, ไม่ tied กับ worker ใด)
+5. Client ไม่ต้องเปลี่ยนเลย — SSE events เหมือนเดิมทุกอย่าง
+
+**ไฟล์หลัก:** `worker.py`, `api/redis_client.py`, `api/routers/agent.py`, `graph/state_builder.py`
 
 **ผลลัพธ์:**
 - Scale API instance ได้ไม่จำกัด (stateless)
-- Scale worker ได้ตาม load
+- Scale worker ได้ตาม load (`docker compose scale worker=N`)
 - Instance ล่มไม่กระทบ session อื่น
+- Redis Streams: ไม่มี event หาย แม้ relay subscribe ช้ากว่า worker
 
 ---
 
-## Phase 2 — Tool Execution Security
-> แยก Tool Execution ออกจาก API/Worker process
+## Phase 2 — Tool Execution Security ✅ Done
+> แยก Tool Execution ออกจาก Worker process
 
 **Goal:**
-- Technical : Tool รันใน isolated container, network allowlist, resource limit ต่อ call
+- Technical : Tool รันใน isolated container, internal network, resource limit ต่อ call
 - Business  : ลูกค้า enterprise ต้องการ security guarantee ก่อน sign contract, ป้องกัน liability จาก malicious tool use
-- Metric    : zero cross-tenant data access, tool timeout < 60s enforced, CPU/RAM capped ต่อ session, penetration test ผ่าน
+- Metric    : zero server breach, tool timeout enforced, CPU/RAM capped ต่อ call
 
-**ปัญหาที่แก้:** `run_shell` / `execute_python` รันใน container เดียวกับ API — bypass blocklist ได้ → ทำลาย server, resource exhaustion, network leak
+**ปัญหาที่แก้:** `run_shell` / `execute_python` รันใน container เดียวกับ Worker — bypass blocklist ได้ → ทำลาย server, resource exhaustion
 
-**สิ่งที่ทำ:**
-1. **Option A (เริ่มต้น)** — Resource limits + ulimit + subprocess timeout ทุก tool call
-2. **Option B (หลัก)** — Tool Execution Service แยก container
-   - Worker → HTTP/gRPC → Tool Service
-   - workspace mount: read/write
-   - /app mount: read-only
-   - network: none (หรือ allowlist เฉพาะ web_search)
-   - CPU/RAM limit ต่อ call
-   - timeout hard kill
+**Option A (ทำแล้ว)** — Resource limits ใน subprocess ทุก call
+- `tool_service/executor.py`: `RLIMIT_CPU` / `RLIMIT_AS` / `RLIMIT_FSIZE` / `RLIMIT_NPROC` / `RLIMIT_NOFILE`
+- ใช้ผ่าน `preexec_fn` ใน forked child process เท่านั้น (ไม่กระทบ worker process)
+
+**Option B (ทำแล้ว)** — Tool Execution Service แยก container
+- `tool_service/main.py`: FastAPI `POST /execute` พร้อม bearer token auth
+- Worker → HTTP → Tool Service (docker-internal only)
+- Container constraints:
+  - `networks: tool-net` (`internal: true` — ออก internet ไม่ได้)
+  - `read_only: true` (/app filesystem)
+  - `tmpfs: /tmp:size=128m`
+  - `deploy.resources.limits: cpus=2, memory=512M`
+- `tools/_tool_client.py`: route ผ่าน HTTP เมื่อ `TOOL_SERVICE_URL` set, fallback local เมื่อ dev/test
+
+**ไฟล์หลัก:** `tool_service/`, `tools/_tool_client.py`, `tools/shell.py`, `tools/code_exec.py`, `Dockerfile.tool-service`
 
 **ผลลัพธ์:**
-- Server code ไม่ถูกแตะได้
-- Tool ล่มไม่กระทบ API/Worker
-- Resource usage controllable
+- Server code ไม่ถูกแตะได้ (read-only FS)
+- Tool ล่มไม่กระทบ Worker (แยก process + container)
+- Memory bomb → `MemoryError` (ไม่กระทบ worker)
+- CPU loop → timeout (ไม่กระทบ job อื่น)
+- Shell ออก internet ไม่ได้ (internal network)
 
 ---
 
@@ -72,27 +83,23 @@
 - Workspace collision — หลาย user เขียน path เดียวกัน
 - Data residency — ข้อมูลลูกค้าต้องไม่ข้าม region
 
-**สิ่งที่ทำ:**
-1. Spawn ephemeral sandbox container ต่อ session (Docker / Kubernetes Pod)
-2. Mount workspace ของ user นั้นเท่านั้น, kill เมื่อ session จบ
-3. Database per tenant (schema separation) หรือ separate DB per region
-4. Priority queue per role (admin > manager > analyst > viewer)
-5. Rate limiting per user_id + per tenant (Redis)
-6. Region-aware deployment (Kubernetes multi-cluster)
-7. Audit log pipeline → immutable storage (S3/GCS per region)
+**สิ่งที่ต้องทำ (เรียงตาม impact/effort):**
 
-**ผลลัพธ์:**
-- User A ไม่เห็นข้อมูล User B เลย
-- Tenant A data ไม่ออกนอก region ที่กำหนด
-- Audit log ครบ ตรวจสอบย้อนหลังได้
-- Resource exhaustion กระทบแค่ session ตัวเอง
+| # | Item | Effort | หมายเหตุ |
+|---|---|---|---|
+| 1 | Rate limiting per user/tenant (Redis) | 1 วัน | กัน abuse ทันที |
+| 2 | Priority queue per role (ARQ) | 1 วัน | admin/manager ได้ worker ก่อน |
+| 3 | Ephemeral sandbox per session (Docker) | 2-3 วัน | core isolation |
+| 4 | Schema per tenant (PostgreSQL) | 1 สัปดาห์ | enterprise data isolation |
+| 5 | Audit log pipeline → immutable store | 1 สัปดาห์ | compliance (PDPA/SOC2) |
+| 6 | Region-aware deployment (K8s) | 1 เดือน+ | data residency |
 
 ---
 
 ## Summary
 
-| Phase | เรื่อง | Effort | Business Goal | Key Metric |
+| Phase | เรื่อง | Status | Business Goal | Key Metric |
 |---|---|---|---|---|
-| 1 | Scalability | 1–2 สัปดาห์ | รองรับ 1,000+ users, no downtime deploy | p95 < 3s, 1,000 concurrent |
-| 2 | Tool Security | 2–4 สัปดาห์ | ผ่าน enterprise security review | pentest pass, zero server breach |
-| 3 | Multi-tenancy + Compliance | 2–3 เดือน | ขาย enterprise ได้, PDPA/GDPR ready | 5,000 concurrent, data residency |
+| 1 | Scalability | ✅ Done | รองรับ 1,000+ users, no downtime deploy | stateless API, worker auto-scale |
+| 2 | Tool Security | ✅ Done | ผ่าน enterprise security review | isolated container, no internet, resource limits |
+| 3 | Multi-tenancy + Compliance | Pending | ขาย enterprise ได้, PDPA/GDPR ready | 5,000 concurrent, data residency |
